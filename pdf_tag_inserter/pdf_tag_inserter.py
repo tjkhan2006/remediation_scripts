@@ -10,6 +10,7 @@ try:
     import pikepdf
     from PIL import Image, ImageTk
     from inserter_core import Editor
+    from tree_filter import filter_tree
 except ImportError as error:
     root=tk.Tk(); root.withdraw()
     messagebox.showerror('Install dependencies',f'{error}\n\nRun: python -m pip install -r requirements.txt')
@@ -26,6 +27,8 @@ class App(tk.Tk):
         self.geometry('1500x940'); self.minsize(1120,800)
         self.editor=None; self.sources=[]; self.batch=[]; self.photo=None
         self.busy=False; self.results=queue.Queue(); self.pool=ThreadPoolExecutor(max_workers=1)
+        self.tree_query=tk.StringVar(); self.tree_role=tk.StringVar(value='All tags')
+        self.tree_count=tk.StringVar(value='No PDF open'); self.filter_job=None; self.highlighted=()
         self.path=tk.StringVar(); self.role=tk.StringVar(value='P'); self.count=tk.StringVar(value='1')
         self.mode=tk.StringVar(value=MODES[0]); self.position=tk.StringVar(value='Last children')
         self.child_index=tk.StringVar(value='1'); self.page=tk.StringVar(value='1')
@@ -35,6 +38,8 @@ class App(tk.Tk):
         self._build()
         self.bind('<Control-o>',lambda e:self.open_pdf())
         self.bind('<Control-s>',lambda e:self.save())
+        self.tree_query.trace_add('write',self.schedule_tree_filter)
+        self.tree_role.trace_add('write',self.schedule_tree_filter)
         self.protocol('WM_DELETE_WINDOW',self.close)
         self.after(60,self.poll)
 
@@ -52,6 +57,14 @@ class App(tk.Tk):
         left=ttk.Frame(panes,padding=8,width=430); center=ttk.Frame(panes,padding=8,width=590); right=ttk.Frame(panes,padding=8,width=360)
         panes.add(left,weight=3); panes.add(center,weight=4); panes.add(right,weight=2)
         ttk.Label(left,text='FULL TAG TREE',font=('TkDefaultFont',11,'bold')).pack(anchor='w',pady=(0,8))
+        filters=ttk.Frame(left); filters.pack(fill='x',pady=(0,6))
+        ttk.Label(filters,text='Search tags / properties').pack(anchor='w')
+        ttk.Entry(filters,textvariable=self.tree_query).pack(fill='x',pady=(2,5))
+        row=ttk.Frame(filters); row.pack(fill='x')
+        self.tree_role_combo=ttk.Combobox(row,textvariable=self.tree_role,values=['All tags'],state='readonly',width=18)
+        self.tree_role_combo.pack(side='left',fill='x',expand=True)
+        self.button(row,'Clear filters',self.clear_tree_filters).pack(side='left',padx=(5,0))
+        ttk.Label(filters,textvariable=self.tree_count).pack(anchor='w',pady=(5,0))
         toolbar=ttk.Frame(left); toolbar.pack(fill='x',pady=(0,6))
         self.button(toolbar,'Expand all',lambda:self.expand(True)).pack(side='left')
         self.button(toolbar,'Collapse all',lambda:self.expand(False)).pack(side='left',padx=4)
@@ -63,7 +76,7 @@ class App(tk.Tk):
         self.tree.configure(yscrollcommand=vs.set,xscrollcommand=hs.set)
         self.tree.grid(row=0,column=0,sticky='nsew'); vs.grid(row=0,column=1,sticky='ns'); hs.grid(row=1,column=0,sticky='ew')
         tf.rowconfigure(0,weight=1); tf.columnconfigure(0,weight=1)
-        self.tree.tag_configure('new',foreground='#087532'); self.tree.tag_configure('content',foreground='#666666')
+        self.tree.tag_configure('new',foreground='#087532'); self.tree.tag_configure('content',foreground='#666666'); self.tree.tag_configure('context',foreground='#888888')
         self.tree.bind('<<TreeviewSelect>>',self.selected)
         ttk.Label(left,text='Select any tag or content reference as your insertion anchor. New tags appear in green.',wraplength=400).pack(fill='x',pady=8)
         ttk.Label(center,text='PAGE CONTENT AND PREVIEW',font=('TkDefaultFont',11,'bold')).pack(anchor='w',pady=(0,8))
@@ -169,23 +182,48 @@ class App(tk.Tk):
             if old: old.close()
             self.path.set(str(editor.path)); self.page.set('1')
             self.page_combo.configure(values=[str(i+1) for i in range(len(editor.pdf.pages))])
+            self.tree_query.set(''); self.tree_role.set('All tags')
             self.sources=[]; self.batch=[]; self.photo=None; self.preview_data=None
             self.source_list.delete(0,'end'); self.refresh_batch(); self.rebuild()
             self.status.set('Select an insertion anchor in the full tag tree. Scan a page to choose visible content.')
             self.scan()
         self.submit(lambda:Editor(path,password),loaded,'Reading the full tag tree...',failed)
 
-    def rebuild(self,new_keys=()):
-        opened={k for k in self.tree.get_children('') if self.tree.item(k,'open')}
+    def schedule_tree_filter(self,*_):
+        if self.filter_job: self.after_cancel(self.filter_job)
+        self.filter_job=self.after(180,self.apply_tree_filter)
+
+    def apply_tree_filter(self):
+        self.filter_job=None
+        if self.busy:
+            self.filter_job=self.after(180,self.apply_tree_filter)
+            return
+        self.rebuild(self.highlighted,preserve_selection=True)
+
+    def clear_tree_filters(self):
+        self.tree_query.set(''); self.tree_role.set('All tags')
+        self.schedule_tree_filter()
+
+    def rebuild(self,new_keys=(),preserve_selection=False):
+        old=self.tree.selection()
+        self.highlighted=tuple(new_keys)
         self.tree.delete(*self.tree.get_children())
         self.tree.insert('','end',iid='root',text='Structure tree root',open=True)
         if self.editor:
+            roles=sorted({str(self.editor.nodes[k].obj.S).lstrip('/') for k in self.editor.order if self.editor.nodes[k].structure})
+            self.tree_role_combo.configure(values=['All tags']+roles)
+            matches,visible=filter_tree(self.editor,self.tree_query.get(),self.tree_role.get())
+            active=bool(self.tree_query.get().strip() or self.tree_role.get()!='All tags')
             for key in self.editor.order:
+                if key not in visible: continue
                 n=self.editor.nodes[key]
-                tags=('new',) if key in new_keys else ('content',) if not n.structure else ()
+                tags=('new',) if key in new_keys else ('context',) if active and key not in matches else ('content',) if not n.structure else ()
                 self.tree.insert(self.editor.parents[key],'end',iid=key,text=n.label,values=(n.page+1 if n.page is not None else '-',),open=True,tags=tags)
-        self.tree.selection_set(new_keys[0] if new_keys else 'root')
-        if new_keys: self.tree.see(new_keys[0])
+            self.tree_count.set(f'{len(matches)} matches | {len(visible)-1} of {len(self.editor.order)} items shown' if active else f'{len(self.editor.order)} tree items')
+        target=old[0] if preserve_selection and old and self.tree.exists(old[0]) else next((k for k in new_keys if self.tree.exists(k)),'root')
+        self.tree.selection_set(target)
+        self.selected()
+        if target!='root': self.tree.see(target)
 
     def selected(self,_event=None):
         choices=self.tree.selection()
@@ -193,7 +231,8 @@ class App(tk.Tk):
 
     def expand(self,opened):
         if self.editor:
-            for key in self.editor.order: self.tree.item(key,open=opened)
+            for key in self.editor.order:
+                if self.tree.exists(key): self.tree.item(key,open=opened)
         self.tree.item('root',open=True)
 
     def scan(self):
@@ -274,6 +313,7 @@ class App(tk.Tk):
         if self.mode.get()=='Existing page content' and not sources: return
         role=self.role.get(); position=self.position.get(); version=self.editor.version
         def done(keys):
+            self.tree_query.set(''); self.tree_role.set('All tags')
             self.sources=[]; self.batch=[]; self.source_list.delete(0,'end'); self.refresh_batch(); self.rebuild(keys)
             self.status.set(f'Inserted {len(keys)} consecutive /{role} tags. Review the green rows, then save a PDF copy.')
         self.submit(lambda:self.editor.insert(selected[0],position,count,role,props,sources,child,version),done,f'Inserting {count} consecutive tags...')

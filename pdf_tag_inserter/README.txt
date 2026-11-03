@@ -16,7 +16,11 @@ A desktop display is required. Processing stays on your computer.
 THE FULL TAG TREE PANEL
 The entire structure hierarchy is on the left, including content references.
 Use Expand all and Collapse all, and scroll horizontally or vertically as needed.
-There is no filter hiding tags. Click any tag or content item to choose the anchor.
+The tag-type dropdown lists only types present in the open PDF, plus All tags.
+Choose a type to show matching tags, their contents, and their ancestors.
+Optional search matches labels and text properties; gray rows provide context.
+Clear filters restores the full tree. Click a visible item to choose the anchor.
+Insertion clears the filters so the newly inserted tags are visible.
 New tags appear in green after insertion. Existing tags stay in their original
 relative order, except for content references you explicitly move to new tags.
 
@@ -92,7 +96,7 @@ can affect them. The app does not validate semantic tag nesting, reading order,
 table rules, PDF/UA, or WCAG compliance; choose appropriate roles and placement.
 
 VALIDATION
-14 automated tests passed, covering all five insertion placements, scalar/mixed
+16 automated tests passed, covering all five insertion placements, scalar/mixed
 children, large batches, text properties, content reassignment, untagged content,
 Form references, ownership rollback, undo, encryption, and save-copy behavior.
 A Linux GUI smoke test passed for full-tree display, scanning/preview, consecutive
@@ -103,6 +107,7 @@ FILES
 pdf_tag_inserter.py     GUI
 inserter_core.py        Tree insertion, content ownership, undo, saving
 content_geometry.py    Scoped content bounds extraction
+tree_filter.py         Tree filtering with original insertion anchors
 requirements.txt       Dependency versions used for validation
 Start_Windows.bat       Windows setup/launcher
 start.sh               macOS/Linux setup/launcher
