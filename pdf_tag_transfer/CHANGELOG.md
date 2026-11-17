@@ -1,3 +1,17 @@
+# 0.1.3
+
+Open documents with Ref targets outside the recovered hierarchy. Preserve valid
+Ref entries and report unresolved entries by source tag path and object number.
+Do not import detached tag graphs or guess replacement targets. Unresolved Ref
+entries are omitted from output; their tags and ancestors stay Needs review,
+even after content transfer. Show a persistent warning and per-tag details;
+include every issue in Export report. Require explicit partial-save confirmation
+for omitted cross-references, including when all content transferred successfully.
+Undo/replay regenerates issues without duplicates. Inputs remain unchanged.
+
+33 transfer/inspector tests pass; GUI save logic is tested without a display.
+Interactive Windows use and the user document remain untested.
+
 # 0.1.2
 
 Support PDF 2.0 namespace dictionaries, root Namespaces lists, tag NS links,

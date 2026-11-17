@@ -199,8 +199,18 @@ def test_unreachable_ref_is_diagnosed_by_tag_path(tmp_path):
     with q.open(source,allow_overwriting_input=True) as pdf:
         unreachable=pdf.make_indirect(q.Dictionary(Type=q.Name.StructElem,S=q.Name.P))
         pdf.Root.StructTreeRoot.K.K[0].Ref=q.Array([unreachable]);pdf.save(source)
-    with pytest.raises(ValueError,match=r'/Ref\[0\].*outside the recovered tag tree'):
-        Transfer(original,source)
+    s=Transfer(original,source)
+    assert len(s.relationship_issues)==1
+    assert s.relationship_issues[0]['path'].endswith('/Ref[0]')
+    assert '/Ref' not in s.nodes[1]
+    s.step();s.undo();s.step()
+    assert len(s.relationship_issues)==1
+    out=tmp_path/'partial.pdf'
+    with pytest.raises(ValueError,match='partial-save confirmation'):s.save(out)
+    assert not out.exists()
+    s.save(out,allow_unresolved_relationships=True)
+    with q.open(out) as pdf: assert '/Ref' not in pdf.Root.StructTreeRoot.K[0].K[0]
+    s.close()
 
 
 def test_ref_without_namespaces_preserves_forward_target_and_version(tmp_path):
@@ -216,3 +226,45 @@ def test_ref_without_namespaces_preserves_forward_target_and_version(tmp_path):
         assert len(second.Ref)==0
         assert tuple(map(int,pdf.pdf_version.split('.'))) >= (1,5)
         assert '/Namespaces' not in pdf.Root.StructTreeRoot
+
+
+def test_mixed_refs_keep_valid_targets_and_report_missing_ones(tmp_path):
+    original,source=pair(tmp_path)
+    with q.open(source,allow_overwriting_input=True) as pdf:
+        first,second=pdf.Root.StructTreeRoot.K.K
+        missing=pdf.make_indirect(q.Dictionary(Type=q.Name.StructElem,S=q.Name.P))
+        first.Ref=q.Array([missing,second,missing]);pdf.save(source)
+    before=source.read_bytes();s=Transfer(original,source)
+    assert len(s.relationship_issues)==2
+    assert len(s.nodes[1].Ref)==1 and s.nodes[1].Ref[0].objgen==s.nodes[2].objgen
+    assert s.relationship_issues[0]['source_object']==s.relationship_issues[1]['source_object']
+    from types import SimpleNamespace
+    from pdf_tag_transfer import App
+    fake=SimpleNamespace(session=s)
+    assert App.tag_state(fake,s.reference.tags[1])=='Needs review'
+    assert App.tag_state(fake,s.reference.tags[0])=='Needs review'
+    s.step(); assert not s.unresolved()  # Relationship issues are independent of content success.
+    assert App.tag_state(fake,s.reference.tags[1])=='Needs review'
+    out=tmp_path/'partial_mixed.pdf';s.save(out,allow_unresolved_relationships=True);s.close()
+    with q.open(out) as pdf:
+        first,second=pdf.Root.StructTreeRoot.K[0].K
+        assert len(first.Ref)==1 and first.Ref[0].objgen==second.objgen
+    assert source.read_bytes()==before
+
+
+def test_gui_partial_relationship_save_requires_confirmation(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    import pdf_tag_transfer as gui
+    original,source=pair(tmp_path)
+    with q.open(source,allow_overwriting_input=True) as pdf:
+        missing=pdf.make_indirect(q.Dictionary(Type=q.Name.StructElem,S=q.Name.P))
+        pdf.Root.StructTreeRoot.K.K[0].Ref=q.Array([missing]);pdf.save(source)
+    s=Transfer(original,source);s.step()
+    out=tmp_path/'gui_partial.pdf';prompts=[]
+    monkeypatch.setattr(gui.filedialog,'asksaveasfilename',lambda **kw:str(out))
+    monkeypatch.setattr(gui.messagebox,'askyesno',lambda title,text:prompts.append(text) or False)
+    fake=SimpleNamespace(session=s,busy=False,running=False,job=lambda fn,done:fn())
+    gui.App.save(fake)
+    assert len(prompts)==1 and 'omitted' in prompts[0] and not out.exists()
+    monkeypatch.setattr(gui.messagebox,'askyesno',lambda *args:True)
+    gui.App.save(fake);assert out.exists();s.close()

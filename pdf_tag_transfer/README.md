@@ -65,7 +65,9 @@ structure is inspected from a newly serialized preview after each batch.
 - The base must have no structure tree or page StructParents. Direct structure elements, duplicate IDs and cyclic/shared source
   structure require normalization before opening. Namespace dictionaries,
   namespace role maps and tag /Ref relationships are rebuilt on new objects;
-  references to tags outside the recovered hierarchy require review. Metadata streams, including compressed attribute streams, are preserved.
+  references to tags outside the recovered hierarchy are reported and omitted
+  from output. Affected tags remain Needs review; saving requires explicit partial-result
+  confirmation. Export report records the omitted relationships for later repair. Metadata streams, including compressed attribute streams, are preserved.
   Metadata that points back to source pages or structure is rejected with a field path. This app does not copy the damaged document's page artwork.
 - Properties are displayed for review; tag editing and a separate output-tree
   browser are future work. Current tree shows source hierarchy with output status.

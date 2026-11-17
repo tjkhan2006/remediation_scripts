@@ -13,7 +13,7 @@ from transfer_core import Transfer, Document
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('PDF Tag Transfer 0.1.2'); self.geometry('1700x980'); self.minsize(1100,700)
+        self.title('PDF Tag Transfer 0.1.3'); self.geometry('1700x980'); self.minsize(1100,700)
         self.session=None; self.output=None; self.running=False; self.busy=False; self.selected=None
         self.executor=ThreadPoolExecutor(max_workers=1); self.results=queue.Queue()
         self.temp=tempfile.TemporaryDirectory(prefix='pdf_tag_transfer_')
@@ -71,6 +71,8 @@ class App(tk.Tk):
             c.bind('<Button-4>',lambda e,cv=c:cv.yview_scroll(-1,'units')); c.bind('<Button-5>',lambda e,cv=c:cv.yview_scroll(1,'units'))
             self.canvases.append(c)
         self.details=tk.Text(self,height=7,wrap='word',state='disabled'); self.details.pack(fill='x',padx=12,pady=6)
+        self.issue_summary=tk.StringVar()
+        ttk.Label(self,textvariable=self.issue_summary,foreground='#9a4d00',padding=(12,2)).pack(fill='x')
         self.progress=ttk.Progressbar(self); self.progress.pack(fill='x',padx=12)
         ttk.Label(self,textvariable=self.status,padding=10).pack(fill='x')
         for var in (self.query,self.role,self.state): var.trace_add('write',lambda *args:self.filter())
@@ -114,6 +116,7 @@ class App(tk.Tk):
         self.job(load,done)
 
     def tag_state(self,tag):
+        if any(tag.id <= issue['tag'] < tag.end for issue in self.session.relationship_issues): return 'Needs review'
         refs=[r for t in self.session.reference.tags[tag.id:tag.end] for r in t.refs]
         if not refs: return 'Empty container'
         done=sum(not r.stream and r.mcid is not None and (r.page,r.mcid) in self.session.links for r in refs)
@@ -124,6 +127,8 @@ class App(tk.Tk):
 
     def filter(self):
         if not self.session or self.busy: return
+        count=len(self.session.relationship_issues)
+        self.issue_summary.set(f'{count} unresolved tag cross-reference(s). Affected tags need review; see details or Export report.' if count else '')
         tags=self.session.reference.tags
         try: page=self.page.get()-1
         except tk.TclError: return
@@ -189,6 +194,9 @@ class App(tk.Tk):
             text=f'Page {page+1}: {s.states[page]} — {s.messages[page]}\n'
             if selected is not None:
                 t=s.reference.tags[selected]; text+=f'{t.path}\nStatus: {self.tag_state(t)}\nAlt: {t.alt}\nActual text: {t.actual_text}\nLanguage: {t.inherited_language}\nAttributes: {t.attributes}'
+            if selected is not None:
+                for issue in s.relationship_issues:
+                    if issue['tag']==selected: text+='\n'+issue['path']+': '+issue['reason']+'. '+issue['output_action']
             self.details.insert('end',text); self.details.configure(state='disabled')
             self.progress.configure(maximum=len(s.states),value=sum(v!='Pending' for v in s.states))
             if self.running: self.after(100,self.step)
@@ -213,9 +221,10 @@ class App(tk.Tk):
         if not self.session or self.busy: return
         self.running=False
         count=len(self.session.unresolved())
-        if (count or 'Pending' in self.session.states) and not messagebox.askyesno('Save partial result',f'{count} source content references remain unresolved. Save this partial result?'): return
+        relationships=len(self.session.relationship_issues)
+        if (count or relationships or 'Pending' in self.session.states) and not messagebox.askyesno('Save partial result',f'{count} source content references and {relationships} tag cross-references remain unresolved. Unresolved tag cross-references will be omitted, not repaired. Save this partial result?'): return
         path=filedialog.asksaveasfilename(defaultextension='.pdf',filetypes=[('PDF','*.pdf')])
-        if path: self.job(lambda:self.session.save(path),lambda _:self.status.set(f'Saved and checked appearance/text: {path}. Continued tagging still requires testing in your editor.'))
+        if path: self.job(lambda:self.session.save(path,allow_unresolved_relationships=bool(relationships)),lambda _:self.status.set(f'Saved and checked appearance/text: {path}. Continued tagging still requires testing in your editor.'))
     def report(self):
         if not self.session or self.busy:return
         import json
@@ -226,7 +235,7 @@ class App(tk.Tk):
             target=Path(path).resolve()
             if target.suffix.lower() != '.json' or any(target == p or (target.exists() and os.path.samefile(target,p)) for p in (s.original,s.source)):
                 messagebox.showerror('Report path','Choose a separate .json report file.'); return
-            Path(path).write_text(json.dumps({'original':str(s.original),'reference':str(s.source),'notice':s.notice,'pages':[{'page':i+1,'status':v,'detail':s.messages[i]} for i,v in enumerate(s.states)],'unresolved':[{'tag':i,'page':r.page+1 if r.page is not None else None,'mcid':r.mcid,'stream':r.stream} for i,r in s.unresolved()]},indent=2),encoding='utf-8')
+            Path(path).write_text(json.dumps({'original':str(s.original),'reference':str(s.source),'notice':s.notice,'relationship_issues':s.relationship_issues,'pages':[{'page':i+1,'status':v,'detail':s.messages[i]} for i,v in enumerate(s.states)],'unresolved':[{'tag':i,'page':r.page+1 if r.page is not None else None,'mcid':r.mcid,'stream':r.stream} for i,r in s.unresolved()]},indent=2),encoding='utf-8')
     def close(self):
         if self.busy: self.running=False; self.status.set('Wait for the current operation before closing.'); return
         if self.session and not messagebox.askyesno('Close','Close this session? Save any wanted output first.'):return

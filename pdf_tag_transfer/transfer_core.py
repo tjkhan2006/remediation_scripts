@@ -124,6 +124,7 @@ class Transfer:
 
     def _copy_relationships(self, source_root):
         """Allocate namespace/tag targets first, then reconnect foreign references."""
+        self.relationship_issues = []
         namespaces = {}
         namespace_list = []
 
@@ -175,9 +176,15 @@ class Transfer:
                 for i,ref in enumerate(obj.Ref):
                     target = targets.get(inspector.object_id(ref))
                     if target is None:
-                        raise ValueError(f'{tag.path}/Ref[{i}]: target is outside the recovered tag tree; the source reference needs review')
+                        self.relationship_issues.append({
+                            'tag':tag.id, 'path':tag.path+f'/Ref[{i}]',
+                            'source_object':list(inspector.object_id(ref)) if inspector.object_id(ref) else None,
+                            'reason':'Target is outside the recovered tag tree',
+                            'output_action':'Reference omitted; target not imported or guessed',
+                        })
+                        continue
                     refs.append(target)
-                node.Ref = q.Array(refs)
+                if refs or len(obj.Ref)==0: node.Ref = q.Array(refs)
         if namespace_list: self.root.Namespaces = q.Array(namespace_list)
         required = '2.0' if namespace_list else '1.5' if any('/Ref' in o for o in self.reference._objects) else '1.0'
         self.minimum_version = max((self.pdf.pdf_version, self.reference.pdf.pdf_version, required), key=lambda v: tuple(map(int,v.split('.'))))
@@ -326,7 +333,9 @@ class Transfer:
     def unresolved(self):
         return [(t.id,r) for t in self.reference.tags for r in t.refs if r.stream or r.mcid is None or (r.page,r.mcid) not in self.links]
 
-    def save(self,path):
+    def save(self,path, *, allow_unresolved_relationships=False):
+        if self.relationship_issues and not allow_unresolved_relationships:
+            raise ValueError(f'{len(self.relationship_issues)} unresolved tag cross-references require explicit partial-save confirmation')
         target=Path(path).resolve()
         if target in (self.original,self.source) or any(target.exists() and os.path.samefile(target,p) for p in (self.original,self.source)):
             raise ValueError('Save to a separate output PDF')
