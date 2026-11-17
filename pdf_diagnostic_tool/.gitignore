@@ -1,0 +1,8 @@
+__pycache__/
+.venv/
+*.pdf
+logs/
+reports/
+sources/
+probes/
+sdk_plugin/build/

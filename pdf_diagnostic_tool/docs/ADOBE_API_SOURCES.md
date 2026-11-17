@@ -1,0 +1,21 @@
+# Adobe primary-source/API validation register
+
+Reviewed 2026-11-17. Runtime target reported by screenshot: Acrobat 2026.002.22031 x64. **Installed SDK headers unavailable; exact installed-header validation and live execution remain pending.** Documentation for Acrobat is used, not the similarly named PDF Library API pages. Published documentation does not establish Fix Reading Order's private implementation.
+
+| API or topic | Official reference | Intended use / validation |
+|---|---|---|
+| `ASBool PDSMCIDGetParent(ASInt32, CosObj, PDSElement*)` | [PDSMC](https://opensource.adobe.com/dc-acrobat-sdk-docs/acrobatsdk/apireference/PDSEdit_Layer/PDSMC.html) | Native reverse lookup for valid MCID; page object for page content, containing stream for Form content. Header: `PDSReadProcs.h`; signature assertion supplied. |
+| `void PDSMCGetParent(CosObj, PDSMC, PDSElement*)` | [PDSMC](https://opensource.adobe.com/dc-acrobat-sdk-docs/acrobatsdk/apireference/PDSEdit_Layer/PDSMC.html) | Container parent; catches SDK exceptions. Never cast a PDEBeginContainer to PDSMC. Assertion supplied. |
+| `void PDSElementGetParent(PDSElement, PDSElement*, ASBool*)` | [PDSElement](https://opensource.adobe.com/dc-acrobat-sdk-docs/acrobatsdk/apireference/PDSEdit_Layer/PDSElement.html) | Native logical ancestry; root-parent flag recorded. Assertion supplied. |
+| `ASBool PDSTreeRootGetElementFromID(PDSTreeRoot, const char*, ASInt32, PDSElement*)` | [PDSTreeRoot](https://opensource.adobe.com/dc-acrobat-sdk-docs/acrobatsdk/apireference/PDSEdit_Layer/PDSTreeRoot.html) | Actual structure `/ID` lookup only; distinct from MCID. Assertion supplied. |
+| `ASBool PDDocGetStructTreeRoot(PDDoc, PDSTreeRoot*)` | [PDDoc](https://opensource.adobe.com/dc-acrobat-sdk-docs/acrobatsdk/apireference/PD_Layer/PDDoc.html) | Read existing root; never create a root during diagnosis. Assertion supplied. |
+| `ASBool PDEContainerGetDict(PDEContainer, CosObj*, ASBool*)`; `PDEContent PDEContainerGetContent(PDEContainer)` | [PDEContainer](https://opensource.adobe.com/dc-acrobat-sdk-docs/acrobatsdk/apireference/PDFEdit_Layer/PDEContainer.html) | Read container properties/nesting. Assertions supplied. |
+| `void PDEFormGetCosObj(PDEForm, CosObj*)` | [PDEForm](https://opensource.adobe.com/dc-acrobat-sdk-docs/acrobatsdk/apireference/PDFEdit_Layer/PDEForm.html) | Correct Form-stream lookup context. Assertion supplied. |
+| `CosObjGetID`, `CosObjGetGeneration`, `CosObjIsIndirect` | [CosObj](https://opensource.adobe.com/dc-acrobat-sdk-docs/acrobatsdk/apireference/COS_Layer/CosObj.html) | File-local object references; compile against installed headers. |
+| PDE content enumeration and page acquisition | [Working with page views and contents](https://opensource.adobe.com/dc-acrobat-sdk-docs/library/plugin/Plugins_Pages.html), [PDFEdit PDEObject](https://opensource.adobe.com/dc-acrobat-sdk-docs/acrobatsdk/apireference/PDFEdit_Layer/PDEObject.html) | Balance acquired page content with `PDPageReleasePDEContent`; no content-commit API. |
+| Official x64 sample/lifecycle | [Creating plugins](https://opensource.adobe.com/dc-acrobat-sdk-docs/library/plugin/Plugins_CreatingSimplePlug.html), [x64 development](https://opensource.adobe.com/dc-acrobat-sdk-docs/acrobatsdk/64bitdev.html) | Reuse BasicUI's entry point, handshake, HFT and menu lifecycle. |
+| SDK acquisition | [Getting Started](https://developer.adobe.com/acrobat-pdfl-sdk/acrobat/gettingstarted) | Download official native SDK; sign-in/EULA flow may require user action. |
+
+`verify_sdk.py` records actual installed header SHA-256 values and declaration contexts. It does not independently prove a signature. `SignatureChecks.cpp` is compiled within the real x64 sample project and compares core API return/parameter types. Full module compilation also checks the remaining API uses. No assertion has yet been evaluated against a real installed SDK in this investigation. If HFT declarations or calling conventions differ, stop and reconcile with that SDK rather than weakening checks.
+
+The SDK's PDSMC documentation describes missing-parent lookup errors; catch and log them. An untagged container can legitimately lack a parent. A missing parent is evidence of this failure only in the context of the specific tagging operation and selected content.
