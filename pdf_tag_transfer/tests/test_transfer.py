@@ -149,3 +149,70 @@ def test_stream_metadata_document_link_has_specific_error(tmp_path):
         pdf.save(source)
     with pytest.raises(ValueError,match=r'/A/ForeignPage.*document structure'):
         Transfer(original,source)
+
+
+def test_namespaces_crossmaps_and_refs_reconnect_after_undo_and_save(tmp_path):
+    original,source=pair(tmp_path)
+    with q.open(source,allow_overwriting_input=True) as pdf:
+        ns=pdf.make_indirect(q.Dictionary(Type=q.Name.Namespace,NS='urn:test:custom'))
+        standard=pdf.make_indirect(q.Dictionary(Type=q.Name.Namespace,NS='http://iso.org/pdf2/ssn'))
+        ns.RoleMapNS=q.Dictionary(CustomP=q.Array([q.Name.P,standard]))
+        standard.RoleMapNS=q.Dictionary(Back=q.Array([q.Name.CustomP,ns]))
+        schema=pdf.make_stream(b'<schema/>');ns.Schema=schema
+        root=pdf.Root.StructTreeRoot;root.Namespaces=q.Array([ns,standard])
+        first,second=root.K.K
+        first.S=q.Name.CustomP;first.NS=ns;second.NS=ns
+        first.Ref=q.Array([second]);second.Ref=q.Array([first])
+        pdf.save(source,min_version='2.0')
+    source_bytes=source.read_bytes()
+    s=Transfer(original,source)
+    assert s.nodes[1].Ref[0].objgen==s.nodes[2].objgen
+    assert s.nodes[2].Ref[0].objgen==s.nodes[1].objgen
+    assert s.nodes[1].NS.objgen==s.nodes[2].NS.objgen
+    assert s.nodes[1].NS.RoleMapNS.CustomP[1].RoleMapNS.Back[1].objgen==s.nodes[1].NS.objgen
+    s.step();s.undo();s.step()
+    out=tmp_path/'namespaces.pdf';s.save(out);s.close()
+    with q.open(out) as pdf:
+        assert pdf.pdf_version=='2.0'
+        root=pdf.Root.StructTreeRoot;first,second=root.K[0].K
+        assert len(root.Namespaces)==2
+        assert first.NS.objgen==root.Namespaces[0].objgen==second.NS.objgen
+        assert first.Ref[0].objgen==second.objgen and second.Ref[0].objgen==first.objgen
+        assert first.NS.Schema.read_bytes()==b'<schema/>'
+        assert root.Namespaces[0].RoleMapNS.CustomP[1].objgen==root.Namespaces[1].objgen
+    assert source.read_bytes()==source_bytes
+    d=Document(out);assert d.selection(1,0)[1]=='First';d.close()
+
+
+def test_tag_namespace_missing_from_root_list_is_registered(tmp_path):
+    original,source=pair(tmp_path)
+    with q.open(source,allow_overwriting_input=True) as pdf:
+        ns=pdf.make_indirect(q.Dictionary(Type=q.Name.Namespace,NS='urn:test:unlisted'))
+        pdf.Root.StructTreeRoot.K.K[0].NS=ns;pdf.save(source,min_version='2.0')
+    s=Transfer(original,source)
+    assert len(s.root.Namespaces)==1 and s.nodes[1].NS.objgen==s.root.Namespaces[0].objgen
+    s.close()
+
+
+def test_unreachable_ref_is_diagnosed_by_tag_path(tmp_path):
+    original,source=pair(tmp_path)
+    with q.open(source,allow_overwriting_input=True) as pdf:
+        unreachable=pdf.make_indirect(q.Dictionary(Type=q.Name.StructElem,S=q.Name.P))
+        pdf.Root.StructTreeRoot.K.K[0].Ref=q.Array([unreachable]);pdf.save(source)
+    with pytest.raises(ValueError,match=r'/Ref\[0\].*outside the recovered tag tree'):
+        Transfer(original,source)
+
+
+def test_ref_without_namespaces_preserves_forward_target_and_version(tmp_path):
+    original,source=pair(tmp_path)
+    with q.open(source,allow_overwriting_input=True) as pdf:
+        first,second=pdf.Root.StructTreeRoot.K.K
+        first.Ref=q.Array([second]);second.Ref=q.Array([])
+        pdf.save(source,min_version='1.5')
+    s=Transfer(original,source);s.step();out=tmp_path/'refs.pdf';s.save(out);s.close()
+    with q.open(out) as pdf:
+        first,second=pdf.Root.StructTreeRoot.K[0].K
+        assert first.Ref[0].objgen==second.objgen
+        assert len(second.Ref)==0
+        assert tuple(map(int,pdf.pdf_version.split('.'))) >= (1,5)
+        assert '/Namespaces' not in pdf.Root.StructTreeRoot

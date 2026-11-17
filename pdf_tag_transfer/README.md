@@ -62,9 +62,10 @@ structure is inspected from a newly serialized preview after each batch.
   automatically. Unresolved references are reported, never guessed.
 - Form/annotation-dependent tags can remain empty or partially linked in the
   output. Partial saves are for continued remediation, not completed accessibility.
-- The base must have no structure tree or page StructParents. Namespace/Ref
-  metadata, direct structure elements, duplicate IDs and cyclic/shared source
-  structure require normalization before opening. Metadata streams, including compressed attribute streams, are preserved.
+- The base must have no structure tree or page StructParents. Direct structure elements, duplicate IDs and cyclic/shared source
+  structure require normalization before opening. Namespace dictionaries,
+  namespace role maps and tag /Ref relationships are rebuilt on new objects;
+  references to tags outside the recovered hierarchy require review. Metadata streams, including compressed attribute streams, are preserved.
   Metadata that points back to source pages or structure is rejected with a field path. This app does not copy the damaged document's page artwork.
 - Properties are displayed for review; tag editing and a separate output-tree
   browser are future work. Current tree shows source hierarchy with output status.

@@ -114,14 +114,73 @@ class Transfer:
             self.pdf.Root.Lang = clean_value(self.reference.pdf.Root.Lang, pdf=self.pdf, path='Catalog/Lang')
         self.nodes = []
         for tag, obj in zip(self.reference.tags, self.reference._objects):
-            if '/NS' in obj or '/Ref' in obj:
-                raise ValueError('PDF namespace or cross-reference metadata requires a later transfer mode.')
             node = self.pdf.make_indirect(q.Dictionary(Type=q.Name.StructElem, S=q.Name('/'+tag.role)))
             for key in ('/T','/Alt','/ActualText','/Lang','/E','/A','/C','/ID'):
                 if key in obj: node[key] = clean_value(obj[key], pdf=self.pdf, path=tag.path+key)
             node.P = self.root if tag.parent is None else self.nodes[tag.parent]
             self.nodes.append(node)
+        self._copy_relationships(source_root)
         self._refresh_tree()
+
+    def _copy_relationships(self, source_root):
+        """Allocate namespace/tag targets first, then reconnect foreign references."""
+        namespaces = {}
+        namespace_list = []
+
+        def namespace(value, path):
+            if not isinstance(value, q.Dictionary):
+                raise ValueError(f'{path}: expected a namespace dictionary')
+            if str(value.get('/Type', '/Namespace')) != '/Namespace':
+                raise ValueError(f'{path}: expected a Namespace, found another object type')
+            if not isinstance(value.get('/NS'), q.String):
+                raise ValueError(f'{path}: namespace URI /NS must be a text string')
+            key = inspector.object_id(value) or ('direct', id(value))
+            if key in namespaces: return namespaces[key]
+            result = self.pdf.make_indirect(q.Dictionary(Type=q.Name.Namespace))
+            namespaces[key] = result
+            namespace_list.append(result)
+            # Register the shell before following RoleMapNS: namespace maps may
+            # legitimately point back to each other without copying page graphs.
+            for name, child in value.items():
+                if str(name) != '/RoleMapNS':
+                    result[str(name)] = clean_value(child, pdf=self.pdf, path=path+str(name))
+            if '/RoleMapNS' in value:
+                mapping = value.RoleMapNS
+                if not isinstance(mapping, q.Dictionary):
+                    raise ValueError(f'{path}/RoleMapNS: expected a dictionary')
+                remapped = q.Dictionary()
+                for role, target in mapping.items():
+                    where = path+'/RoleMapNS'+str(role)
+                    if isinstance(target, q.Name):
+                        remapped[str(role)] = q.Name(str(target))
+                    elif isinstance(target, q.Array) and len(target)==2 and isinstance(target[0], q.Name):
+                        remapped[str(role)] = q.Array([q.Name(str(target[0])), namespace(target[1], where+'[1]')])
+                    else:
+                        raise ValueError(f'{where}: expected a role name or [role, namespace]')
+                result.RoleMapNS = remapped
+            return result
+
+        if '/Namespaces' in source_root:
+            if not isinstance(source_root.Namespaces, q.Array):
+                raise ValueError('StructTreeRoot/Namespaces: expected an array')
+            for i,value in enumerate(source_root.Namespaces):
+                namespace(value, f'StructTreeRoot/Namespaces[{i}]')
+        targets = {inspector.object_id(obj):node for obj,node in zip(self.reference._objects,self.nodes)}
+        for tag,obj,node in zip(self.reference.tags,self.reference._objects,self.nodes):
+            if '/NS' in obj: node.NS = namespace(obj.NS, tag.path+'/NS')
+            if '/Ref' in obj:
+                if not isinstance(obj.Ref, q.Array):
+                    raise ValueError(f'{tag.path}/Ref: expected an array of tag references')
+                refs = []
+                for i,ref in enumerate(obj.Ref):
+                    target = targets.get(inspector.object_id(ref))
+                    if target is None:
+                        raise ValueError(f'{tag.path}/Ref[{i}]: target is outside the recovered tag tree; the source reference needs review')
+                    refs.append(target)
+                node.Ref = q.Array(refs)
+        if namespace_list: self.root.Namespaces = q.Array(namespace_list)
+        required = '2.0' if namespace_list else '1.5' if any('/Ref' in o for o in self.reference._objects) else '1.0'
+        self.minimum_version = max((self.pdf.pdf_version, self.reference.pdf.pdf_version, required), key=lambda v: tuple(map(int,v.split('.'))))
 
     def _refresh_tree(self):
         by_id = {inspector.object_id(o): i for i,o in enumerate(self.reference._objects) if inspector.object_id(o)}
@@ -262,7 +321,7 @@ class Transfer:
         return last
 
     def snapshot(self):
-        buf=BytesIO(); self.pdf.save(buf); return buf.getvalue()
+        buf=BytesIO(); self.pdf.save(buf, min_version=self.minimum_version); return buf.getvalue()
 
     def unresolved(self):
         return [(t.id,r) for t in self.reference.tags for r in t.refs if r.stream or r.mcid is None or (r.page,r.mcid) not in self.links]
@@ -273,7 +332,7 @@ class Transfer:
             raise ValueError('Save to a separate output PDF')
         fd,tmp=tempfile.mkstemp(suffix='.pdf',dir=target.parent); os.close(fd)
         try:
-            self.pdf.save(tmp)
+            self.pdf.save(tmp, min_version=self.minimum_version)
             with q.open(tmp) as check:
                 issues=check.check_pdf_syntax()
                 if issues: raise ValueError('Output syntax check reported: '+'; '.join(issues))

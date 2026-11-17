@@ -13,7 +13,7 @@ from transfer_core import Transfer, Document
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('PDF Tag Transfer 0.1.1'); self.geometry('1700x980'); self.minsize(1100,700)
+        self.title('PDF Tag Transfer 0.1.2'); self.geometry('1700x980'); self.minsize(1100,700)
         self.session=None; self.output=None; self.running=False; self.busy=False; self.selected=None
         self.executor=ThreadPoolExecutor(max_workers=1); self.results=queue.Queue()
         self.temp=tempfile.TemporaryDirectory(prefix='pdf_tag_transfer_')
