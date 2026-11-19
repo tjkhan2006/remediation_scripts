@@ -13,7 +13,7 @@ from transfer_core import Transfer, Document
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('PDF Tag Transfer 0.1.3'); self.geometry('1700x980'); self.minsize(1100,700)
+        self.title('PDF Tag Transfer 0.2.0'); self.geometry('1700x980'); self.minsize(1100,700)
         self.session=None; self.output=None; self.running=False; self.busy=False; self.selected=None
         self.executor=ThreadPoolExecutor(max_workers=1); self.results=queue.Queue()
         self.temp=tempfile.TemporaryDirectory(prefix='pdf_tag_transfer_')
@@ -38,6 +38,7 @@ class App(tk.Tk):
         actions=ttk.Frame(self,padding=(12,0,12,8)); actions.pack(fill='x')
         for text,command in [('Open / Analyze',self.open),('Start / Resume',self.start),('Pause',self.pause),('Step page',self.step),('Undo page',self.undo),('Save copy…',self.save)]:
             ttk.Button(actions,text=text,command=command).pack(side='left',padx=(0,6))
+        ttk.Button(actions,text='Show issues',command=self.show_issues).pack(side='right',padx=5)
         ttk.Button(actions,text='Export report…',command=self.report).pack(side='right')
         panes=ttk.Panedwindow(self,orient='horizontal'); panes.pack(fill='both',expand=True,padx=12)
         left=ttk.Frame(panes,padding=6); views=ttk.Frame(panes); panes.add(left,weight=1); panes.add(views,weight=5)
@@ -119,7 +120,7 @@ class App(tk.Tk):
         if any(tag.id <= issue['tag'] < tag.end for issue in self.session.relationship_issues): return 'Needs review'
         refs=[r for t in self.session.reference.tags[tag.id:tag.end] for r in t.refs]
         if not refs: return 'Empty container'
-        done=sum(not r.stream and r.mcid is not None and (r.page,r.mcid) in self.session.links for r in refs)
+        done=sum(self.session.linked(r) for r in refs)
         if done==len(refs): return 'Transferred'
         if done: return 'Partial'
         if any(r.stream or r.mcid is None or r.page is None or self.session.states[r.page]=='Needs review' for r in refs): return 'Needs review'
@@ -128,7 +129,8 @@ class App(tk.Tk):
     def filter(self):
         if not self.session or self.busy: return
         count=len(self.session.relationship_issues)
-        self.issue_summary.set(f'{count} unresolved tag cross-reference(s). Affected tags need review; see details or Export report.' if count else '')
+        summary=self.session.content_summary()
+        self.issue_summary.set(f"CONTENT: {summary['linked_content_references']}/{summary['source_content_references']} regions linked; {summary['populated_tags']}/{summary['source_tags_with_content']} source content-bearing tags populated. {summary['pages_needing_review']} page(s) need review. {count} unresolved tag cross-references. Use Show issues for details.")
         tags=self.session.reference.tags
         try: page=self.page.get()-1
         except tk.TclError: return
@@ -162,7 +164,7 @@ class App(tk.Tk):
         def render():
             if self.output: self.output.close()
             path=Path(self.temp.name)/'preview.pdf'; path.write_bytes(self.session.snapshot()); self.output=Document(path)
-            frames=[]
+            frames=[];content_text={}
             for i,doc in enumerate((self.session.base,self.session.reference,self.output)):
                 p=doc.render_doc[page]; w,h=sizes[i]
                 scale=min(w/p.rect.width,h/p.rect.height) if zoom=='Fit page' else w/p.rect.width if zoom=='Fit width' else float(zoom[:-1])/100
@@ -174,13 +176,17 @@ class App(tk.Tk):
                     else:
                         try: self.session.analyze_page(page); boxes=self.session.reference.selection(selected,page)[0]
                         except ValueError: pass
+                if selected is not None and i in (1,2):
+                    _,text,note,_=doc.selection(selected,page)
+                    content_text[i]=text if text else f'[No extracted text. {note}]'
                 applied=[]
                 if i==2:
                     for t in doc.tags:
                         if t.refs: applied.extend(doc.selection(t.id,page)[0])
                 frames.append((width,height,pixels,scale,boxes,applied))
-            return frames
-        def drawn(frames):
+            return frames,content_text
+        def drawn(result):
+            frames,content_text=result
             self.photos=[]
             for i,(c,(w,h,pixels,scale,boxes,applied)) in enumerate(zip(self.canvases,frames)):
                 photo=ImageTk.PhotoImage(Image.frombytes('RGB',(w,h),pixels)); self.photos.append(photo)
@@ -193,7 +199,7 @@ class App(tk.Tk):
             s=self.session
             text=f'Page {page+1}: {s.states[page]} — {s.messages[page]}\n'
             if selected is not None:
-                t=s.reference.tags[selected]; text+=f'{t.path}\nStatus: {self.tag_state(t)}\nAlt: {t.alt}\nActual text: {t.actual_text}\nLanguage: {t.inherited_language}\nAttributes: {t.attributes}'
+                t=s.reference.tags[selected]; text+=f"{t.path}\nStatus: {self.tag_state(t)}\nREFERENCE CONTENT: {content_text.get(1,'')}\nOUTPUT LINKED CONTENT: {content_text.get(2,'')}\nAlt: {t.alt}\nActual text: {t.actual_text}\nLanguage: {t.inherited_language}\nAttributes: {t.attributes}"
             if selected is not None:
                 for issue in s.relationship_issues:
                     if issue['tag']==selected: text+='\n'+issue['path']+': '+issue['reason']+'. '+issue['output_action']
@@ -208,7 +214,10 @@ class App(tk.Tk):
     def step(self):
         if not self.session or self.busy: return
         def done(page):
-            if page is None: self.running=False; self.status.set('Transfer finished. Review unresolved items before saving.')
+            if page is None:
+                self.running=False
+                count=len(self.session.unresolved());linked=self.session.content_summary()['linked_content_references']
+                self.status.set(f'Processing stopped: {linked} content regions linked, {count} unresolved. '+('No content transferred. Open Show issues.' if not linked else 'Some content is missing. Open Show issues.' if count else 'Linked content verified; review output before saving.'))
             else:
                 self.page.set(page+1); self.status.set(f'Page {page+1}: {self.session.states[page]} — {self.session.messages[page]}')
             self.filter(); self.refresh()
@@ -221,10 +230,35 @@ class App(tk.Tk):
         if not self.session or self.busy: return
         self.running=False
         count=len(self.session.unresolved())
+        if self.session.reference.tags and not self.session.links:
+            messagebox.showerror('No content transferred','No tag content has been linked. Saving would create an empty tag tree. Click Show issues to see why pages could not be transferred.');return
         relationships=len(self.session.relationship_issues)
-        if (count or relationships or 'Pending' in self.session.states) and not messagebox.askyesno('Save partial result',f'{count} source content references and {relationships} tag cross-references remain unresolved. Unresolved tag cross-references will be omitted, not repaired. Save this partial result?'): return
+        if (count or relationships or any(v in ('Pending','Needs review','Partial') for v in self.session.states)) and not messagebox.askyesno('Save partial result',f'{count} source content references and {relationships} tag cross-references remain unresolved. Unresolved tag cross-references will be omitted, not repaired. Save this partial result?'): return
         path=filedialog.asksaveasfilename(defaultextension='.pdf',filetypes=[('PDF','*.pdf')])
-        if path: self.job(lambda:self.session.save(path,allow_unresolved_relationships=bool(relationships)),lambda _:self.status.set(f'Saved and checked appearance/text: {path}. Continued tagging still requires testing in your editor.'))
+        if path: self.job(lambda:self.session.save(path,allow_unresolved_relationships=bool(relationships),allow_unresolved_content=True),lambda _:self.status.set(f'Saved; linked tag content and page appearance/text verified: {path}. Continued tagging still requires testing in your editor.'))
+    def show_issues(self):
+        if not self.session or self.busy:return
+        from tkinter.scrolledtext import ScrolledText
+        session=self.session;summary=session.content_summary()
+        lines=[f"CONTENT LINKED: {summary['linked_content_references']} / {summary['source_content_references']} source content references",
+               f"POPULATED TAGS: {summary['populated_tags']} / {summary['source_tags_with_content']} source tags with content",
+               f"EMPTY SOURCE LEAVES: {summary['empty_source_leaves']} (no source content reference to recover)",
+               'Copying a tree does not mean its contents transferred. Each successful page is verified after serialization.', '']
+        for i,state in enumerate(session.states):
+            lines.append(f'Page {i+1}: {state} — {session.messages[i] or "Not processed yet"}')
+        lines.extend(['','UNRESOLVED CONTENT REFERENCES'])
+        for tag,ref in session.unresolved():
+            lines.append(f'{session.reference.tags[tag].path}: page {ref.page+1 if ref.page is not None else "unknown"}, stream {ref.stream}, MCID {ref.mcid}')
+        lines.extend(['','UNRESOLVED TAG RELATIONSHIPS'])
+        for issue in session.relationship_issues:lines.append(issue['path']+': '+issue['reason'])
+        text='\n'.join(lines)
+        window=tk.Toplevel(self);window.title('Content transfer issues');window.geometry('1000x620')
+        viewer=ScrolledText(window,wrap='word');viewer.pack(fill='both',expand=True,padx=10,pady=10)
+        viewer.insert('end',text);viewer.configure(state='disabled')
+        def copy():self.clipboard_clear();self.clipboard_append(text)
+        ttk.Button(window,text='Copy issue details',command=copy).pack(side='left',padx=10,pady=8)
+        ttk.Button(window,text='Close',command=window.destroy).pack(side='right',padx=10,pady=8)
+
     def report(self):
         if not self.session or self.busy:return
         import json
@@ -235,7 +269,7 @@ class App(tk.Tk):
             target=Path(path).resolve()
             if target.suffix.lower() != '.json' or any(target == p or (target.exists() and os.path.samefile(target,p)) for p in (s.original,s.source)):
                 messagebox.showerror('Report path','Choose a separate .json report file.'); return
-            Path(path).write_text(json.dumps({'original':str(s.original),'reference':str(s.source),'notice':s.notice,'relationship_issues':s.relationship_issues,'pages':[{'page':i+1,'status':v,'detail':s.messages[i]} for i,v in enumerate(s.states)],'unresolved':[{'tag':i,'page':r.page+1 if r.page is not None else None,'mcid':r.mcid,'stream':r.stream} for i,r in s.unresolved()]},indent=2),encoding='utf-8')
+            Path(path).write_text(json.dumps({'original':str(s.original),'reference':str(s.source),'notice':s.notice,'content_summary':s.content_summary(),'relationship_issues':s.relationship_issues,'pages':[{'page':i+1,'status':v,'detail':s.messages[i]} for i,v in enumerate(s.states)],'unresolved':[{'tag':i,'page':r.page+1 if r.page is not None else None,'mcid':r.mcid,'stream':r.stream} for i,r in s.unresolved()]},indent=2),encoding='utf-8')
     def close(self):
         if self.busy: self.running=False; self.status.set('Wait for the current operation before closing.'); return
         if self.session and not messagebox.askyesno('Close','Close this session? Save any wanted output first.'):return

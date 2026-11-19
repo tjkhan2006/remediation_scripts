@@ -1,3 +1,21 @@
+# 0.2.0
+
+Recover actual content when source editing regrouped text operators or renamed
+resources: match glyphs/images/vectors against original positions and content,
+and safely split encoded text runs. Support whole source Form tags mapped to
+original Form placements. Retain exact-boundary transfer when operators agree.
+
+Reopen each serialized transferred page and the final output to verify actual
+/K content, text/geometry and ParentTree ownership. Roll back failed page changes.
+Block tree-only saving; require explicit confirmation for incomplete content.
+Display linked-content/populated-tag counts, selected source/output text and a
+Show issues window with Copy issue details. Reports include content counts.
+Do not call pages without source content references Transferred.
+
+Existing unsupported/ambiguous content remains unresolved, including Forms that
+need internal splitting and annotation references. This is not proof of continued
+Acrobat tagging success. The user PDFs and interactive Windows use remain untested.
+
 # 0.1.3
 
 Open documents with Ref targets outside the recovered hierarchy. Preserve valid

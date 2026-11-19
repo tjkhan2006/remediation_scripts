@@ -1,95 +1,102 @@
-# PDF Tag Transfer
+# PDF Tag Transfer 0.2.0
 
-First implementation of a local desktop app for recovering partial tagging work
-onto the original untagged PDF. Its layout and tag inspection come from
-`../pdf_tag_inspector`. Keep both folders together in the repository.
+A local desktop app for recovering partial tagging work onto an original PDF.
+Keep this folder and `../pdf_tag_inspector` together when using the repository.
+The downloadable ZIP bundles the required inspector engine in the app folder.
 
 ## Launch
 
-Install Python 3.11+ with Tk (3.12 recommended). On Windows double-click
-`Start_Windows.bat`; on macOS/Linux run `sh start.sh`. First launch downloads
-Python dependencies into a local `.venv`. PDF processing itself stays local.
-Ubuntu typically needs `python3-tk` and `python3-venv` installed.
+Install Python 3.11+ with Tk (3.12 recommended). On Windows run
+`Start_Windows.bat`; on macOS/Linux run `sh start.sh`. First launch installs
+`requirements.txt` into `.venv`. Processing stays local. Ubuntu typically needs
+`python3-tk` and `python3-venv`. Manual launch: `python pdf_tag_transfer.py`.
 
-Manual launch: install `requirements.txt`, then run `python pdf_tag_transfer.py`.
+## Check content, not just the tree
 
-## Workflow
+1. Choose the original untagged PDF and partially tagged reference, then Open /
+   Analyze. The source structure is visible immediately. **This does not mean its
+   contents have transferred.**
+2. Start / Resume or Step page links original text, images and vectors to new tag
+   objects. Pause stops after the current operation. Undo page replays earlier
+   successful page batches.
+3. Watch the **CONTENT: linked/expected regions** and **populated tags** counts.
+   Select a tag: the details panel shows **REFERENCE CONTENT** and **OUTPUT LINKED
+   CONTENT**, while the previews show bounding boxes. Green output outlines show
+   linked content; blue outlines show the selected tag and descendants.
+4. Use **Show issues** to see page outcomes, reasons for failures, unresolved
+   content and broken tag cross-references. Copy issue details is available there.
+   Export report saves these outcomes and content counts as JSON.
+5. Save copy writes a separate PDF and reopens it to verify actual content
+   references, tag text, glyph/image/vector geometry and ParentTree ownership, as
+   well as every page's appearance and extracted text. A tree-only result is
+   blocked. Incomplete content requires explicit partial-save confirmation.
+6. Open the output in Acrobat Pro (or your tagging editor). Verify a populated
+   paragraph, table cell and figure where applicable; create a new tag on a
+   previously failing page; save/reopen and confirm it still works.
 
-1. Choose the **original untagged PDF** and **partially tagged reference**.
-2. Open / Analyze loads the source hierarchy and initializes a new structure tree
-   on a separate in-memory copy of the original.
-3. Start / Resume transfers one page per batch. Pause stops after the current
-   operation. Step page processes the next pending page; Undo page reverses the
-   most recent successful page batch. It rebuilds earlier successful batches.
-4. Select a tree tag to see its content in all three previews. Blue outlines show
-   the selection; green output outlines show applied content. Container selection
-   includes descendants. Page and zoom controls apply to all three previews;
-   scrolling is independent. Page numbers are physical positions, starting at 1.
-5. Filter by type, metadata/path search, current page, missing figure alt text,
-   and transfer status. Gray ancestors remain for context.
-6. Export report writes page outcomes and unresolved source references to JSON.
-7. Save copy writes a separate PDF, reopens it, checks syntax and compares every
-   page's rendered appearance and extracted text with the original. Partial
-   saves require confirmation. Inputs and their filesystem aliases are protected.
+Navigation and zoom apply to all three previews. Scrolling is independent.
+Physical page numbers start at 1. Filters include type, metadata/path, current
+page, missing figure alt text and transfer status. Gray ancestors remain for
+context. The tree represents the source hierarchy with output-content status.
 
-The output artwork does not animate or redraw progressively: it is the original
-artwork throughout. Actual page tagging is applied in batches; the output tree
-status and outlines refresh after completed changes. Empty source containers are
-retained. Untagged continuation pages remain available for future tagging.
+## How content is recovered
 
-## Matching and preservation
+The original page artwork remains the base. The app first compares drawing
+instructions with source marking wrappers removed. If instructions match, exact
+source boundaries can be applied to original drawing operations.
 
-This version deliberately supports **unchanged page-stream artwork**. It compares
-coordinate systems, extracted text, rendered pixels, and parsed drawing
-instructions with marked-content wrappers removed. Equivalent page drawing
-instructions allow exact source tag boundaries to be applied to original
-instructions, including several tags within a single text object. Existing
-source object numbers, ParentTree and stale ID indexes are not copied.
+When PDF editing has regrouped operators or changed resource names, a second path
+matches individual glyphs, images and vector primitives by content and position.
+It splits text-showing operations at encoded character boundaries, retaining
+spacing adjustments and graphics state. Source and original coordinate systems,
+page rendering and extracted text must agree. Candidate matches must be unique.
+One original text run can therefore populate several distinct source tags.
 
-Fresh structure elements, MCIDs, page StructParents, ParentTree, parent links and
-IDTree are built. Source child/content order, tag roles, title, alt/actual/expansion
-text, language, IDs, attribute dictionaries, RoleMap and ClassMap are retained
-when representable. Geometry/rendering reuse the inspector engine. Output tag
-structure is inspected from a newly serialized preview after each batch.
+Fresh page MCIDs, StructParents, structure /K references and ParentTree entries are
+created. Structure order and supported metadata are retained. Namespace maps and
+valid tag /Ref arrays reconnect to the new objects. Unreachable /Ref targets are
+reported, omitted from output, and require partial-save confirmation. They are not
+repaired by guessing or importing detached source tag graphs.
 
-## Current limits / next work
+Each successful page is serialized, independently reopened and checked before its
+status becomes Transferred. Failed page changes are rolled back. Final save
+repeats the content checks. A page with no source references is labeled **No source
+content**, not Transferred. Untagged continuation pages retain the original artwork.
 
-- Both files must have the same page count. Changed page content, resource-name
-  changes, geometry changes and other drawing-instruction differences require
-  review. There is no geometric fallback or manual reassignment editor yet.
-- Marked Forms, annotation OBJR links, nested MCIDs, tagged artifacts, unsupported
-  non-MCID marked content, and ambiguous ownership are not transferred
-  automatically. Unresolved references are reported, never guessed.
-- Form/annotation-dependent tags can remain empty or partially linked in the
-  output. Partial saves are for continued remediation, not completed accessibility.
-- The base must have no structure tree or page StructParents. Direct structure elements, duplicate IDs and cyclic/shared source
-  structure require normalization before opening. Namespace dictionaries,
-  namespace role maps and tag /Ref relationships are rebuilt on new objects;
-  references to tags outside the recovered hierarchy are reported and omitted
-  from output. Affected tags remain Needs review; saving requires explicit partial-result
-  confirmation. Export report records the omitted relationships for later repair. Metadata streams, including compressed attribute streams, are preserved.
-  Metadata that points back to source pages or structure is rejected with a field path. This app does not copy the damaged document's page artwork.
-- Properties are displayed for review; tag editing and a separate output-tree
-  browser are future work. Current tree shows source hierarchy with output status.
-  There is no OCR, page remapping, session persistence or compliance validation.
-- Password-protected inputs are not supported by this GUI. Modifying signed
-  documents does not preserve signature validity.
-- Pixel comparison uses PyMuPDF at its default resolution. This does not prove
-  equivalent rendering in every viewer or complete PDF/UA correctness.
+## Limits
 
-**Continued tagging in Acrobat has not been validated.** Test the saved copy in
-Acrobat Pro: create a tag with Reading Order on a formerly failing page, use
-Show In Tags Panel, save, reopen, and repeat on a continuation page. The related
-repository investigation does not establish a proven root cause for the reported
-Acrobat failure. Do not treat a successful transfer as proof it fixes that failure.
+- This cannot infer content for source tags that have no recoverable content
+  reference or location. Show issues counts empty source leaves separately.
+- Both files need the same page count, coordinate systems, page appearance and
+  extracted text. There is no OCR or changed-layout/page-remapping mode.
+- A source Form reference can match a complete original Form placement. Forms
+  containing several separately tagged regions or mixed tagged/untagged artwork
+  cannot yet be split; these remain unresolved. Annotation OBJR references and
+  ambiguous/overlapping matches remain unresolved as well.
+- The page is the transaction unit: one unresolved region can leave the whole page
+  for review. The app does not silently guess missing associations.
+- Nested MCIDs, tagged artifacts, unsupported non-MCID marked content, cyclic/shared
+  hierarchy, duplicate IDs and direct structure elements need review or normalization.
+- The base must have no structure tree or page StructParents. Metadata that points
+  back to source page/structure objects is rejected with a field path. Compressed
+  metadata streams are supported. Password inputs are not supported by this GUI.
+- Properties are read-only. There is no manual content reassignment, session
+  persistence or complete PDF/UA validation. Modified digital signatures are not
+  retained as valid. Pixel checks use PyMuPDF's default resolution; they do not
+  establish identical behavior in every PDF viewer.
+- Native Windows GUI use, continued Acrobat tagging and the reported user PDF pair
+  have not been validated here. Test your output before using it for remediation.
 
 ## Validation
 
-Engine tests cover exact intra-text-object boundaries, metadata and ID indexes,
-changed pages, duplicate ownership/IDs, nested MCIDs, marked Forms, undo/replay,
-separate saves, and input aliases. Run `python -m pytest tests -q` after installing
-pytest. Inspector regression tests can be run from the repository root alongside
-these tests. Native Windows and interactive GUI execution have not been validated
-in the headless development environment.
+Run `python -m pytest pdf_tag_transfer/tests pdf_tag_inspector/tests -q` from the
+repository root with pytest installed, or `python -m pytest tests -q` in an extracted
+download. Tests include resegmented text operators, splitting one original text run
+between source tags, resource renaming, image/vector links, Form links with/without
+explicit page references, multibyte fonts, corrupted /K or ParentTree detection,
+empty-output blocking, partial-save confirmation, rollback/undo, metadata, namespace
+and tag-reference handling, and input protection.
 
-PyMuPDF is AGPL/commercial software; check dependency terms before redistribution.
+The GUI needs an interactive display. Callback logic has headless tests; interactive
+Windows validation remains outstanding. PyMuPDF is AGPL/commercial software; review
+dependency terms before redistribution.

@@ -268,3 +268,185 @@ def test_gui_partial_relationship_save_requires_confirmation(tmp_path,monkeypatc
     assert len(prompts)==1 and 'omitted' in prompts[0] and not out.exists()
     monkeypatch.setattr(gui.messagebox,'askyesno',lambda *args:True)
     gui.App.save(fake);assert out.exists();s.close()
+
+
+def assert_population(s,out):
+    assert s.states==['Transferred'],s.messages
+    assert not s.unresolved()
+    s.save(out)
+    d=Document(out)
+    assert d.selection(1,0)[1]=='First'
+    assert d.selection(2,0)[1]=='Second'
+    assert all(d.selection(i,0)[0] for i in (1,2))
+    d.close()
+
+
+def test_regrouped_text_operators_populate_tags_not_just_tree(tmp_path):
+    original,source=pair(tmp_path)
+    with q.open(source,allow_overwriting_input=True) as pdf:
+        data=pdf.pages[0].obj.Contents.read_bytes().replace(b'(First) Tj',b'[(Fi) 0 (rst)] TJ')
+        pdf.pages[0].obj.Contents=pdf.make_stream(data);pdf.save(source)
+    s=Transfer(original,source);s.step()
+    assert_population(s,tmp_path/'matched.pdf')
+    assert 'position matching' in s.messages[0]
+    s.undo();assert not s.links
+    s.step();assert_population(s,tmp_path/'replayed.pdf');s.close()
+
+
+def test_single_original_text_run_is_split_between_source_tags(tmp_path):
+    original,source=pair(tmp_path)
+    with q.open(original,allow_overwriting_input=True) as pdf:
+        pdf.pages[0].obj.Contents=pdf.make_stream(b'BT /F1 20 Tf 30 340 Td (FirstSecond) Tj ET');pdf.save(original)
+    with q.open(source,allow_overwriting_input=True) as pdf:
+        data=pdf.pages[0].obj.Contents.read_bytes().replace(b'0 -30 Td ',b'')
+        pdf.pages[0].obj.Contents=pdf.make_stream(data);pdf.save(source)
+    before=original.read_bytes();s=Transfer(original,source);s.step()
+    assert_population(s,tmp_path/'split.pdf');s.close()
+    assert original.read_bytes()==before
+
+
+def test_renamed_font_resource_matched_by_content(tmp_path):
+    original,source=pair(tmp_path)
+    with q.open(source,allow_overwriting_input=True) as pdf:
+        fonts=pdf.pages[0].obj.Resources.Font;fonts.SourceFont=fonts.F1;del fonts.F1
+        data=pdf.pages[0].obj.Contents.read_bytes().replace(b'/F1 ',b'/SourceFont ')
+        pdf.pages[0].obj.Contents=pdf.make_stream(data);pdf.save(source)
+    s=Transfer(original,source);s.step();assert_population(s,tmp_path/'font.pdf');s.close()
+
+
+def test_tree_only_output_is_blocked_and_counts_show_missing_content(tmp_path):
+    original,source=pair(tmp_path,True);s=Transfer(original,source)
+    s.step();summary=s.content_summary()
+    assert summary['linked_content_references']==0
+    assert summary['unresolved_content_references']==2
+    with pytest.raises(ValueError,match='empty tag tree'):
+        s.save(tmp_path/'empty.pdf',allow_unresolved_content=True)
+    assert not (tmp_path/'empty.pdf').exists();s.close()
+
+
+def test_save_verifies_actual_content_instead_of_trusting_mapping(tmp_path):
+    original,source=pair(tmp_path);s=Transfer(original,source);s.step()
+    # Simulate the reported symptom: a populated in-memory mapping but missing saved /K.
+    s.nodes[1].K=q.Array([])
+    with pytest.raises(ValueError,match='saved tag content references'):
+        s.save(tmp_path/'bad.pdf')
+    assert not (tmp_path/'bad.pdf').exists();s.close()
+
+
+def test_image_and_vector_content_are_populated_with_text(tmp_path):
+    original,source=pair(tmp_path)
+    for path,tagged in ((original,False),(source,True)):
+        with q.open(path,allow_overwriting_input=True) as pdf:
+            image=pdf.make_stream(b'\xff\x00\x00\x00\xff\x00')
+            image.Type=q.Name.XObject;image.Subtype=q.Name.Image;image.Width=2;image.Height=1
+            image.ColorSpace=q.Name.DeviceRGB;image.BitsPerComponent=8
+            name='/SourceImage' if tagged else '/BaseImage'
+            pdf.pages[0].obj.Resources.XObject=q.Dictionary({name:image})
+            vector=b'q 0 0 1 rg 30 40 60 20 re f Q'
+            image_ops=b'q 60 0 0 30 150 80 cm '+name.encode()+b' Do Q'
+            if tagged:
+                doc=pdf.Root.StructTreeRoot.K
+                for mcid in (2,3):
+                    tag=pdf.make_indirect(q.Dictionary(Type=q.Name.StructElem,S=q.Name.Figure,P=doc,Pg=pdf.pages[0].obj,K=mcid))
+                    doc.K.append(tag)
+                vector=b'/Figure <</MCID 2>> BDC '+vector+b' EMC'
+                image_ops=b'/Figure <</MCID 3>> BDC '+image_ops+b' EMC'
+            pdf.pages[0].obj.Contents=pdf.make_stream(pdf.pages[0].obj.Contents.read_bytes()+b'\n'+vector+b'\n'+image_ops)
+            pdf.save(path)
+    s=Transfer(original,source);s.step()
+    assert s.states==['Transferred'],s.messages
+    out=tmp_path/'artwork.pdf';s.save(out);d=Document(out)
+    assert d.selection(3,0)[0] and d.selection(4,0)[0]
+    assert s.content_summary()['linked_content_references']==4
+    d.close();s.close()
+
+
+@pytest.mark.parametrize('explicit_page',[True,False])
+def test_source_form_reference_can_link_to_original_form_placement(tmp_path,explicit_page):
+    original,source=pair(tmp_path)
+    for path,tagged in ((original,False),(source,True)):
+        with q.open(path,allow_overwriting_input=True) as pdf:
+            data=b'BT /F1 14 Tf 100 150 Td (Inside Form) Tj ET'
+            if tagged:data=b'/P <</MCID 7>> BDC '+data+b' EMC'
+            form=pdf.make_stream(data);form.Type=q.Name.XObject;form.Subtype=q.Name.Form
+            form.BBox=q.Array([0,0,400,400]);form.Resources=q.Dictionary(Font=pdf.pages[0].obj.Resources.Font)
+            if tagged:form.StructParents=8
+            pdf.pages[0].obj.Resources.XObject=q.Dictionary(Fm=form)
+            pdf.pages[0].obj.Contents=pdf.make_stream(pdf.pages[0].obj.Contents.read_bytes()+b'\n/Fm Do')
+            if tagged:
+                doc=pdf.Root.StructTreeRoot.K
+                tag=pdf.make_indirect(q.Dictionary(Type=q.Name.StructElem,S=q.Name.P,P=doc,K=q.Dictionary(Type=q.Name.MCR,Stm=form,Pg=pdf.pages[0].obj,MCID=7)))
+                if not explicit_page:del tag.K.Pg
+                doc.K.append(tag)
+            pdf.save(path)
+    s=Transfer(original,source);s.step()
+    assert s.states==['Transferred'],s.messages
+    out=tmp_path/'form.pdf';s.save(out);d=Document(out)
+    assert d.selection(3,0)[1]=='Inside Form' and d.selection(3,0)[0]
+    assert not s.unresolved();d.close();s.close()
+
+
+def test_real_multibyte_font_content_survives_matching(tmp_path):
+    original=tmp_path/'original.pdf';source=tmp_path/'source.pdf'
+    with fitz.open() as doc:
+        page=doc.new_page();page.insert_text((50,60),'测试',fontname='china-s',fontsize=18);doc.save(original)
+    with q.open(original) as pdf:
+        page=pdf.pages[0];fonts=page.obj.Resources.Font
+        old=str(next(iter(fonts.keys())));fonts.RenamedFont=fonts[old];del fonts[old]
+        ops=b'\n'.join(s.read_bytes() for s in page.obj.Contents) if isinstance(page.obj.Contents,q.Array) else page.obj.Contents.read_bytes()
+        ops=ops.replace(old.encode(),b'/RenamedFont')
+        page.obj.Contents=pdf.make_stream(b'/P <</MCID 0>> BDC '+ops+b' EMC')
+        root=pdf.make_indirect(q.Dictionary(Type=q.Name.StructTreeRoot));pdf.Root.StructTreeRoot=root
+        doc=pdf.make_indirect(q.Dictionary(Type=q.Name.StructElem,S=q.Name.Document,P=root));root.K=doc
+        tag=pdf.make_indirect(q.Dictionary(Type=q.Name.StructElem,S=q.Name.P,P=doc,Pg=page.obj,K=0));doc.K=tag
+        pdf.save(source)
+    s=Transfer(original,source);s.step()
+    assert s.states==['Transferred'],s.messages
+    out=tmp_path/'cid.pdf';s.save(out);d=Document(out)
+    assert d.selection(1,0)[1]=='测试';d.close();s.close()
+
+
+def test_parenttree_corruption_is_detected_before_saving(tmp_path):
+    original,source=pair(tmp_path);s=Transfer(original,source);s.step()
+    owners=q.NumberTree(s.root.ParentTree)[0];owners[0]=s.nodes[2]
+    with pytest.raises(ValueError,match='ParentTree'):
+        s.save(tmp_path/'wrong_owner.pdf')
+    assert not (tmp_path/'wrong_owner.pdf').exists();s.close()
+
+
+def test_content_free_stream_cannot_pass_as_populated_tags(tmp_path):
+    original,source=pair(tmp_path);s=Transfer(original,source);s.step()
+    # Retain artwork and tree/ParentTree but remove all actual marked-content wrappers.
+    from transfer_core import stream_parts
+    drawing,_=stream_parts(s.pdf.pages[0]);s.pdf.pages[0].obj.Contents=s.pdf.make_stream(q.unparse_content_stream(drawing))
+    with pytest.raises(ValueError,match='saved tag text'):
+        s.save(tmp_path/'unpopulated.pdf')
+    assert not (tmp_path/'unpopulated.pdf').exists();s.close()
+
+
+def test_partial_content_save_requires_opt_in(tmp_path):
+    original,source=pair(tmp_path)
+    with q.open(original,allow_overwriting_input=True) as pdf:
+        pdf.add_blank_page(page_size=(400,400));pdf.save(original)
+    with q.open(source,allow_overwriting_input=True) as pdf:
+        page=pdf.add_blank_page(page_size=(400,400));page.obj.Resources=pdf.pages[0].obj.Resources
+        page.obj.Contents=pdf.make_stream(b'/P <</MCID 0>> BDC BT /F1 20 Tf 30 340 Td (Changed) Tj ET EMC')
+        doc=pdf.Root.StructTreeRoot.K
+        doc.K.append(pdf.make_indirect(q.Dictionary(Type=q.Name.StructElem,S=q.Name.P,P=doc,Pg=page.obj,K=0)))
+        pdf.save(source)
+    s=Transfer(original,source);s.step();s.step()
+    assert s.states==['Transferred','Needs review']
+    with pytest.raises(ValueError,match='partial-save confirmation'):s.save(tmp_path/'partial_content.pdf')
+    s.save(tmp_path/'partial_content.pdf',allow_unresolved_content=True)
+    assert s.content_summary()['linked_content_references']==2
+    assert s.content_summary()['unresolved_content_references']==1
+    s.close()
+
+
+def test_explicit_default_coordinate_values_do_not_block_content(tmp_path):
+    original,source=pair(tmp_path)
+    with q.open(source,allow_overwriting_input=True) as pdf:
+        page=pdf.pages[0];page.obj.Rotate=0;page.obj.UserUnit=1
+        page.obj.CropBox=q.Array([0,0,400,400]);page.obj.MediaBox=q.Array([0.0,0.0,400.0,400.0])
+        pdf.save(source)
+    s=Transfer(original,source);s.step();assert_population(s,tmp_path/'defaults.pdf');s.close()
